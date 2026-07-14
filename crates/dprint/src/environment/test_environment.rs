@@ -36,10 +36,12 @@ use sys_traits::FsMetadata;
 use sys_traits::FsMetadataValue;
 use sys_traits::FsRead;
 use sys_traits::FsReadDir;
+use sys_traits::FsReadLink;
 use sys_traits::FsRemoveDirAll;
 use sys_traits::FsRemoveFile;
 use sys_traits::FsRename;
 use sys_traits::FsSetPermissions;
+use sys_traits::FsSymlinkFile;
 use sys_traits::FsWrite;
 use sys_traits::SystemRandom;
 use sys_traits::SystemTimeNow;
@@ -281,6 +283,13 @@ impl TestEnvironment {
     self.sys.env_set_current_dir(new_path).unwrap();
   }
 
+  /// Creates a symlink at `link` that points to the file at `original`.
+  pub fn create_symlink_file(&self, original: impl AsRef<Path>, link: impl AsRef<Path>) {
+    let original = self.clean_path(original);
+    let link = self.clean_path(link);
+    self.sys.fs_symlink_file(&original, &link).unwrap();
+  }
+
   /// Pins the in-memory filesystem clock so subsequent writes get a
   /// deterministic modification time. Advancing it between writes lets tests
   /// exercise mtime-based cache invalidation without depending on wall-clock.
@@ -392,6 +401,33 @@ impl TestEnvironment {
     }
     .clean();
     PathBuf::from(path.to_string_lossy().replace("\\", "/"))
+  }
+
+  /// Follows symlinks the way the real filesystem does for read/write, since the
+  /// in-memory filesystem's `open` does not follow them. Returns the resolved
+  /// target path (or the input path when it isn't a symlink or the link dangles).
+  fn resolve_symlinks(&self, path: PathBuf) -> PathBuf {
+    let mut path = path;
+    for _ in 0..40 {
+      let Ok(metadata) = self.sys.fs_symlink_metadata(&path) else {
+        break;
+      };
+      if !metadata.file_type().is_symlink() {
+        break;
+      }
+      let Ok(target) = self.sys.fs_read_link(&path) else {
+        break;
+      };
+      path = if target.is_absolute() {
+        target
+      } else {
+        match path.parent() {
+          Some(parent) => self.clean_path(parent.join(target)),
+          None => target,
+        }
+      };
+    }
+    path
   }
 }
 
@@ -545,12 +581,12 @@ impl Environment for TestEnvironment {
   }
 
   fn read_file_bytes(&self, file_path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    let file_path = self.clean_path(file_path);
+    let file_path = self.resolve_symlinks(self.clean_path(file_path));
     self.sys.fs_read(file_path).map(|b| b.into_owned())
   }
 
   fn write_file_bytes(&self, file_path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
-    let file_path = self.clean_path(file_path);
+    let file_path = self.resolve_symlinks(self.clean_path(file_path));
     self.sys.fs_write(file_path, bytes)
   }
 
@@ -624,6 +660,17 @@ impl Environment for TestEnvironment {
           name: entry.file_name().into_owned(),
           path: self.clean_path(entry.path()),
         });
+      } else if file_type.is_symlink() {
+        // follow the symlink and, when it points to a file, format the file it
+        // points to (see the real environment for details)
+        let path = self.clean_path(entry.path());
+        let points_to_file = self.sys.fs_metadata(&path).map(|m| m.file_type().is_file()).unwrap_or(false);
+        if points_to_file {
+          entries.push(DirEntry::File {
+            name: entry.file_name().into_owned(),
+            path,
+          });
+        }
       }
     }
 
