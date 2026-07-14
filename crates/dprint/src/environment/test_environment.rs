@@ -549,6 +549,12 @@ impl Environment for TestEnvironment {
     self.sys.fs_read(file_path).map(|b| b.into_owned())
   }
 
+  fn read_file_start_bytes(&self, file_path: impl AsRef<Path>, max_bytes: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = self.read_file_bytes(file_path)?;
+    bytes.truncate(max_bytes);
+    Ok(bytes)
+  }
+
   fn write_file_bytes(&self, file_path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
     let file_path = self.clean_path(file_path);
     self.sys.fs_write(file_path, bytes)

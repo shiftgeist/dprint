@@ -257,7 +257,7 @@ pub enum HiddenSubCommand {
   WindowsUninstall(String),
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FilePatternArgs {
   pub include_patterns: Vec<String>,
   pub include_pattern_overrides: Option<Vec<String>>,
@@ -267,6 +267,7 @@ pub struct FilePatternArgs {
   pub no_gitignore: bool,
   pub only_staged: bool,
   pub only_dirty: bool,
+  pub use_hashbangs: bool,
 }
 
 #[derive(Debug, Error)]
@@ -493,6 +494,7 @@ fn parse_file_patterns<TStdInReader: StdInReader>(matches: &ArgMatches, std_in_r
     include_pattern_overrides: matches.get_many("includes-override").map(values_to_vec),
     exclude_patterns: maybe_values_to_vec(matches.get_many("excludes")),
     exclude_pattern_overrides: matches.get_many("excludes-override").map(values_to_vec),
+    use_hashbangs: matches.get_flag("use-hashbangs"),
   })
 }
 
@@ -991,6 +993,12 @@ impl ClapExtensions for clap::Command {
           .value_name("patterns")
           .help("List of file patterns or directories in quotes to exclude when formatting. This overrides what is specified in the config file.")
           .num_args(1..),
+      )
+      .arg(
+        Arg::new("use-hashbangs")
+          .long("use-hashbangs")
+          .help("Routes extensionless files to a plugin based on their shebang line using the `hashbangs` config. This may alternatively be enabled in the configuration file.")
+          .num_args(0),
       )
       .arg(
         Arg::new("allow-node-modules")

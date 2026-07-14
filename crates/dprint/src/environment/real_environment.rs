@@ -292,6 +292,20 @@ impl Environment for RealEnvironment {
     }
   }
 
+  fn read_file_start_bytes(&self, file_path: impl AsRef<Path>, max_bytes: usize) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    log_debug!(self, "Reading start of file: {}", file_path.as_ref().display());
+    #[allow(clippy::disallowed_methods)]
+    let file =
+      fs::File::open(&file_path).map_err(|err| io::Error::new(err.kind(), format!("Error reading file {}: {:#}", file_path.as_ref().display(), err)))?;
+    let mut buffer = Vec::with_capacity(max_bytes);
+    file
+      .take(max_bytes as u64)
+      .read_to_end(&mut buffer)
+      .map_err(|err| io::Error::new(err.kind(), format!("Error reading file {}: {:#}", file_path.as_ref().display(), err)))?;
+    Ok(buffer)
+  }
+
   fn get_staged_files(&self) -> Result<Vec<PathBuf>> {
     let output = Command::new("git")
       .arg("diff")

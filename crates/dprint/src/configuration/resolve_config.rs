@@ -7,6 +7,7 @@ use deno_terminal::colors;
 use dprint_core::async_runtime::FutureExt;
 use dprint_core::async_runtime::LocalBoxFuture;
 use dprint_core::configuration::ConfigKeyValue;
+use indexmap::IndexMap;
 use thiserror::Error;
 
 use crate::arg_parser::CliArgs;
@@ -25,6 +26,7 @@ use crate::utils::PluginKind;
 use crate::utils::ResolvedFilePathWithText;
 use crate::utils::ResolvedFilePathWithTextRef;
 use crate::utils::ShowConfirmStrategy;
+use crate::utils::normalize_shebang_line;
 use crate::utils::resolve_url_or_file_path_to_file_with_cache;
 
 use super::resolve_main_config_path::ResolvedConfigPathWithText;
@@ -37,12 +39,28 @@ pub struct ResolvedConfig {
   pub base_path: CanonicalizedPathBuf,
   pub includes: Option<Vec<String>>,
   pub excludes: Option<Vec<String>>,
+  /// Maps a normalized shebang line to a file extension (without a leading dot).
+  ///
+  /// Used to route extensionless files to a plugin as if the file's path had the
+  /// mapped extension appended (`path + mappedExt`). Empty when not configured.
+  pub hashbangs: IndexMap<String, String>,
+  /// Whether shebang-based routing (via `hashbangs`) is enabled. Routing is only
+  /// active when this is `Some(true)` and `hashbangs` is non-empty.
+  pub use_hashbangs: Option<bool>,
   pub plugins: Vec<PluginSourceReference>,
   pub incremental: Option<bool>,
   /// Whether a nested (directory specific) configuration file should inherit
   /// the plugins and configuration of its ancestor configuration file.
   pub inherit: Option<bool>,
   pub config_map: ConfigMap,
+}
+
+impl ResolvedConfig {
+  /// Whether shebang-based routing should be applied: it must be explicitly
+  /// enabled and there must be at least one `hashbangs` mapping.
+  pub fn hashbangs_enabled(&self) -> bool {
+    self.use_hashbangs == Some(true) && !self.hashbangs.is_empty()
+  }
 }
 
 #[derive(Debug, Error)]
@@ -121,6 +139,8 @@ pub async fn resolve_config_from_args(args: &CliArgs, environment: &impl Environ
           base_path: environment.cwd().clone(),
           source: PathSource::new_local(environment.cwd().join_panic_relative("dprint.json")),
           excludes: None,
+          hashbangs: IndexMap::new(),
+          use_hashbangs: None,
           includes: None,
           incremental: None,
           inherit: None,
@@ -145,6 +165,13 @@ pub async fn resolve_config_from_args(args: &CliArgs, environment: &impl Environ
     }
 
     resolved_config.plugins = plugins;
+  }
+
+  // let the CLI flag turn on shebang routing even when it isn't set in the config
+  if let Some(patterns) = args.sub_command.file_patterns()
+    && patterns.use_hashbangs
+  {
+    resolved_config.use_hashbangs = Some(true);
   }
 
   Ok(resolved_config)
@@ -188,6 +215,8 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
 
   let includes = take_array_from_config_map(&mut config_map, "includes")?;
   let excludes = take_array_from_config_map(&mut config_map, "excludes")?;
+  let hashbangs = take_hashbangs_from_config_map(&mut config_map)?;
+  let use_hashbangs = take_bool_from_config_map(&mut config_map, "useHashbangs")?;
 
   let incremental = take_bool_from_config_map(&mut config_map, "incremental")?;
   let inherit = take_bool_from_config_map(&mut config_map, "inherit")?;
@@ -199,6 +228,8 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
     config_map,
     includes,
     excludes,
+    hashbangs,
+    use_hashbangs,
     plugins,
     incremental,
     inherit,
@@ -224,6 +255,16 @@ pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig) -> Re
 
   // combine excludes, rebasing the ancestor's patterns onto this config's directory
   config.excludes = inherit_excludes(config.excludes, parent.excludes.as_deref(), &parent.base_path, &config.base_path);
+
+  // inherit the use_hashbangs flag when not specified in the nested config
+  if config.use_hashbangs.is_none() {
+    config.use_hashbangs = parent.use_hashbangs;
+  }
+
+  // combine hashbangs, with the nested config's entries winning on conflicts
+  for (key, ext) in &parent.hashbangs {
+    config.hashbangs.entry(key.clone()).or_insert_with(|| ext.clone());
+  }
 
   // inherit the incremental flag when not specified in the nested config
   if config.incremental.is_none() {
@@ -319,6 +360,11 @@ async fn handle_config_file<TEnvironment: Environment>(
       Some(resolved_excludes) => resolved_excludes.extend(excludes),
       None => resolved_config.excludes = Some(excludes),
     }
+  }
+
+  // combine hashbangs, with the higher precedence (extending) config winning
+  for (key, ext) in take_hashbangs_from_config_map(&mut new_config_map)? {
+    resolved_config.hashbangs.entry(key).or_insert(ext);
   }
 
   // Also remove any non-wasm plugins, but only for remote configurations.
@@ -577,6 +623,38 @@ fn take_bool_from_config_map(config_map: &mut ConfigMap, property_name: &str) ->
   }
 }
 
+/// Takes the top-level `hashbangs` property out of the config map, parsing it
+/// into a map of normalized shebang line -> file extension (without a leading
+/// dot). Returns an empty map when not specified.
+fn take_hashbangs_from_config_map(config_map: &mut ConfigMap) -> Result<IndexMap<String, String>> {
+  let Some(value) = config_map.shift_remove("hashbangs") else {
+    return Ok(IndexMap::new());
+  };
+  let ConfigMapValue::PluginConfig(raw) = value else {
+    bail!("Expected the 'hashbangs' configuration to be an object mapping shebang lines to file extensions.");
+  };
+  // `locked`, `associations` and `overrides` are plugin-only concepts and a
+  // real shebang key always starts with `#!`, so their presence means misuse
+  if raw.locked || raw.associations.is_some() || !raw.overrides.is_empty() {
+    bail!("The 'hashbangs' configuration must be an object mapping shebang lines to file extensions.");
+  }
+  let mut result = IndexMap::with_capacity(raw.properties.len());
+  for (key, value) in raw.properties {
+    let ConfigKeyValue::String(ext) = value else {
+      bail!("Expected a string file extension for the '{}' shebang in the 'hashbangs' configuration.", key);
+    };
+    let normalized_ext = ext.trim().trim_start_matches('.').to_lowercase();
+    if normalized_ext.is_empty() {
+      bail!(
+        "Expected a non-empty file extension for the '{}' shebang in the 'hashbangs' configuration.",
+        key
+      );
+    }
+    result.insert(normalize_shebang_line(&key), normalized_ext);
+  }
+  Ok(result)
+}
+
 fn filter_non_wasm_plugins(plugins: Vec<PluginSourceReference>, environment: &impl Environment) -> Vec<PluginSourceReference> {
   if plugins.iter().any(|plugin| plugin.plugin_kind() != Some(PluginKind::Wasm)) {
     log_warn!(environment, &get_warn_non_wasm_plugins_message());
@@ -645,6 +723,21 @@ mod tests {
       is_first_download: false,
     };
     resolve_config_from_path_with_bytes(&config_path, environment).await.unwrap()
+  }
+
+  fn test_resolved_config(source: PathSource, base_path: CanonicalizedPathBuf) -> ResolvedConfig {
+    ResolvedConfig {
+      source,
+      base_path,
+      includes: None,
+      excludes: None,
+      hashbangs: IndexMap::new(),
+      use_hashbangs: None,
+      plugins: Vec::new(),
+      incremental: None,
+      inherit: None,
+      config_map: ConfigMap::new(),
+    }
   }
 
   #[test]
@@ -1271,6 +1364,85 @@ mod tests {
   }
 
   #[test]
+  fn should_resolve_hashbangs() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r##"{
+          "hashbangs": {
+            "#!/usr/bin/env  bash": ".SH",
+            "#!/usr/bin/env -S deno run": "ts"
+          },
+          "useHashbangs": true
+        }"##,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let config = resolve_local_config("/dprint.json", &environment).await;
+      assert_eq!(
+        config.hashbangs,
+        IndexMap::from([
+          // inter-token whitespace in the key is normalized
+          ("#!/usr/bin/env bash".to_string(), "sh".to_string()),
+          // a leading dot in the extension is stripped and the extension is lowercased
+          ("#!/usr/bin/env -S deno run".to_string(), "ts".to_string()),
+        ])
+      );
+      assert_eq!(config.use_hashbangs, Some(true));
+      assert!(config.hashbangs_enabled());
+      // these should be removed from the config map so they aren't treated as global config
+      assert!(!config.config_map.contains_key("hashbangs"));
+      assert!(!config.config_map.contains_key("useHashbangs"));
+    });
+  }
+
+  #[test]
+  fn hashbangs_disabled_when_toggle_missing() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r##"{
+          "hashbangs": {
+            "#!/bin/sh": ".sh"
+          }
+        }"##,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let config = resolve_local_config("/dprint.json", &environment).await;
+      // the mapping is parsed, but routing is off until explicitly enabled
+      assert_eq!(config.use_hashbangs, None);
+      assert!(!config.hashbangs_enabled());
+    });
+  }
+
+  #[test]
+  fn should_error_on_non_string_hashbang_value() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/test.json",
+      r##"{
+        "hashbangs": {
+          "#!/bin/sh": 5
+        }
+      }"##
+        .as_bytes(),
+    );
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("https://dprint.dev/test.json", &environment).await.err().unwrap();
+      assert!(
+        result
+          .to_string()
+          .contains("Expected a string file extension for the '#!/bin/sh' shebang in the 'hashbangs' configuration."),
+        "actual: {}",
+        result
+      );
+    });
+  }
+
+  #[test]
   fn should_error_extending_locked_config() {
     let environment = TestEnvironment::new();
     environment.add_remote_file(
@@ -1850,8 +2022,6 @@ mod tests {
   #[test]
   fn inherit_config_should_merge_ancestor_config() {
     let parent = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/"),
       includes: Some(vec!["**/*.txt".to_string()]),
       // "**/node_modules" rebases into the nested directory, but the anchored
       // "dist" points outside it and is dropped
@@ -1861,7 +2031,6 @@ mod tests {
         PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/json.wasm"),
       ],
       incremental: Some(true),
-      inherit: None,
       config_map: ConfigMap::from([
         ("lineWidth".to_string(), ConfigMapValue::from_i32(80)),
         (
@@ -1877,15 +2046,15 @@ mod tests {
           }),
         ),
       ]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/"),
+      )
     };
     let child = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/sub"),
-      includes: None,
       excludes: Some(vec!["sub-excludes".to_string()]),
       // a plugin specified in the child has precedence over the ancestor's
       plugins: vec![PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm")],
-      incremental: None,
       inherit: Some(true),
       config_map: ConfigMap::from([(
         "test".to_string(),
@@ -1896,6 +2065,10 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/sub"),
+      )
     };
 
     let result = inherit_config(child, &parent).unwrap();
@@ -1967,13 +2140,7 @@ mod tests {
   #[test]
   fn inherit_config_should_error_overriding_locked_ancestor_config() {
     let parent = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/"),
-      includes: None,
-      excludes: None,
       plugins: Vec::new(),
-      incremental: None,
-      inherit: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1983,14 +2150,13 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
         }),
       )]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/"),
+      )
     };
     let child = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/sub"),
-      includes: None,
-      excludes: None,
       plugins: Vec::new(),
-      incremental: None,
       inherit: Some(true),
       config_map: ConfigMap::from([(
         "test".to_string(),
@@ -2001,6 +2167,10 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/sub"),
+      )
     };
 
     let err = inherit_config(child, &parent).err().unwrap();

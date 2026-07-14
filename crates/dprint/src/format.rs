@@ -3,6 +3,7 @@ use anyhow::bail;
 use dprint_core::async_runtime::future;
 use dprint_core::plugins::NullCancellationToken;
 use std::borrow::Cow;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::environment::Environment;
 use crate::incremental::IncrementalFile;
+use crate::paths::FileToFormat;
 use crate::resolution::GetPluginResult;
 use crate::resolution::InitializedPluginWithConfig;
 use crate::resolution::InitializedPluginWithConfigFormatRequest;
@@ -25,7 +27,7 @@ use crate::utils::Semaphore;
 struct TaskWork {
   semaphore: Rc<Semaphore>,
   plugins: Vec<Rc<PluginWithConfig>>,
-  file_paths: Vec<PathBuf>,
+  file_paths: Vec<FileToFormat>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -142,7 +144,7 @@ where
 
         let plugins = Rc::new(plugins);
         let mut format_handles = Vec::with_capacity(task_work.file_paths.len());
-        for file_path in task_work.file_paths.into_iter() {
+        for file in task_work.file_paths.into_iter() {
           let permit = match task_work.semaphore.acquire().await {
             Ok(permit) => permit,
             Err(_) => return, // semaphore was closed, so stop working
@@ -155,6 +157,7 @@ where
           let error_logger = error_logger.clone();
           let scope = scope.clone();
           format_handles.push(dprint_core::async_runtime::spawn(async move {
+            let file_path = file.path.clone();
             let long_format_token = CancellationToken::new();
             dprint_core::async_runtime::spawn({
               let long_format_token = long_format_token.clone();
@@ -171,7 +174,7 @@ where
                 }
               }
             });
-            let result = run_for_file_path(environment, incremental_file, scope, plugins, file_path.clone(), ensure_stable_format, f).await;
+            let result = run_for_file_path(environment, incremental_file, scope, plugins, file, ensure_stable_format, f).await;
             long_format_token.cancel();
             if let Err(err) = result {
               match err {
@@ -220,13 +223,18 @@ where
     incremental_file: Option<Arc<IncrementalFile<TEnvironment>>>,
     scope: Rc<PluginsScope<TEnvironment>>,
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
-    file_path: PathBuf,
+    file: FileToFormat,
     ensure_stable_format: EnsureStableFormat,
     f: F,
   ) -> Result<(), RunForFilePathError>
   where
     F: Fn(PathBuf, Vec<u8>, Vec<u8>, Instant, TEnvironment) -> Result<(), RunForFilePathError> + 'static + Clone + Send + Sync,
   {
+    // the (possibly synthetic) path passed to the plugin, ex. an extensionless
+    // file routed by its shebang is formatted as `path + mappedExt`
+    let format_path = file.format_path().into_owned();
+    let file_path = file.path;
+
     // it's a big perf improvement to do this work on a blocking thread
     let result = dprint_core::async_runtime::spawn_blocking(move || {
       let file_text = environment.read_file_bytes(&file_path)?;
@@ -246,10 +254,10 @@ where
     };
 
     let (start_instant, formatted_text) =
-      run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &file_text).await?;
+      run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), &file_path, &format_path, &file_text).await?;
 
     let formatted_text = if ensure_stable_format.0 && formatted_text != file_text {
-      get_stabilized_format_text(environment.clone(), scope, plugins, file_path.clone(), formatted_text).await?
+      get_stabilized_format_text(environment.clone(), scope, plugins, &file_path, &format_path, formatted_text).await?
     } else {
       formatted_text
     };
@@ -263,13 +271,14 @@ where
     environment: TEnvironment,
     scope: Rc<PluginsScope<TEnvironment>>,
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
-    file_path: PathBuf,
+    file_path: &Path,
+    format_path: &Path,
     mut formatted_text: Vec<u8>,
   ) -> Result<Vec<u8>> {
     log_debug!(environment, "Ensuring stable format: {}", file_path.display());
     let mut count = 0;
     loop {
-      match run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &formatted_text).await {
+      match run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path, format_path, &formatted_text).await {
         Ok((_, next_pass_text)) => {
           if next_pass_text == formatted_text {
             return Ok(formatted_text);
@@ -306,7 +315,8 @@ where
     environment: TEnvironment,
     scope: Rc<PluginsScope<TEnvironment>>,
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
-    file_path: PathBuf,
+    file_path: &Path,
+    format_path: &Path,
     file_text: &[u8],
   ) -> Result<(Instant, Vec<u8>)> {
     let start_instant = Instant::now();
@@ -317,10 +327,10 @@ where
       let start_instant = Instant::now();
       let format_text_result = initialized_plugin
         .format_text(InitializedPluginWithConfigFormatRequest {
-          file_path: file_path.to_path_buf(),
+          file_path: format_path.to_path_buf(),
           file_bytes: file_text.to_vec(),
           range: None,
-          override_config: plugin.get_config_file_overrides_for_path(&file_path),
+          override_config: plugin.get_config_file_overrides_for_path(format_path),
           on_host_format: scope.create_host_format_callback(),
           token: Arc::new(NullCancellationToken),
         })

@@ -281,6 +281,36 @@ In the following example, both the TypeScript plugin and Prettier plugin support
 }
 ```
 
+## Hashbangs
+
+Extensionless files that begin with a shebang line (ex. `#!/usr/bin/env deno`) can be routed to a plugin by mapping the shebang line to a file extension with the top-level `"hashbangs"` config.
+
+```json
+{
+  "hashbangs": {
+    "#!/bin/sh": ".sh",
+    "#!/usr/bin/env node": ".js",
+    "#!/usr/bin/env -S deno run": ".ts"
+  },
+  "useHashbangs": true,
+  "plugins": [
+    // ...etc...
+  ]
+}
+```
+
+Shebang routing is opt-in: it only runs when you enable it with `"useHashbangs": true` (or the `--use-hashbangs` CLI flag) **and** at least one `"hashbangs"` mapping is set.
+
+With the above, an extensionless file whose first line is `#!/usr/bin/env -S deno run --allow-net` is formatted as if its path ended in `.ts`—so whichever plugin handles `.ts` formats it. The file is still read from and written to its original path; the mapped extension is only used to pick a plugin.
+
+It only affects **extensionless** files:
+
+- Files that already have an extension are never read for a shebang.
+- Only extensionless files are inspected, and only their leading bytes are read; a file that doesn't start with `#!` is skipped.
+- A shebang is matched against a key as a **prefix up to a whitespace boundary**, so `"#!/usr/bin/env -S deno run"` matches `#!/usr/bin/env -S deno run --allow-net ...`. When multiple keys match, the longest one wins. Whitespace between tokens is normalized before matching.
+
+When shebang routing is disabled (the default), extensionless files are ignored as before.
+
 ## Overrides
 
 The plugin `"overrides"` config changes plugin configuration for specific files

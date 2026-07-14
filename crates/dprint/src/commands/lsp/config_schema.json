@@ -86,6 +86,19 @@
       "items": {
         "type": "string"
       }
+    },
+    "hashbangs": {
+      "description": "Maps a shebang line to a file extension so extensionless files that begin with that shebang are formatted as if they had that extension. Only extensionless files are inspected. Requires \"useHashbangs\": true (or --use-hashbangs) to take effect.",
+      "type": "object",
+      "additionalProperties": {
+        "description": "The file extension to format the matching extensionless file as (ex. \".sh\").",
+        "type": "string"
+      }
+    },
+    "useHashbangs": {
+      "description": "Whether to route extensionless files to a plugin based on their shebang line using the \"hashbangs\" mapping. Defaults to false.",
+      "type": "boolean",
+      "default": false
     }
   },
   "additionalProperties": {

@@ -322,7 +322,10 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     config: Rc<ResolvedConfig>,
     global_config_diagnostics: Vec<GlobalConfigDiagnostic>,
   ) -> Result<Self> {
-    let plugin_name_maps = PluginNameResolutionMaps::from_plugins(plugins.iter().map(|p| p.as_ref()), &config.base_path)?;
+    // only enable shebang routing when it's explicitly turned on
+    let empty_hashbangs = IndexMap::new();
+    let hashbangs = if config.hashbangs_enabled() { &config.hashbangs } else { &empty_hashbangs };
+    let plugin_name_maps = PluginNameResolutionMaps::from_plugins(plugins.iter().map(|p| p.as_ref()), &config.base_path, hashbangs)?;
 
     Ok(PluginsScope {
       environment,
@@ -445,7 +448,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 
   pub fn format(self: &Rc<Self>, request: HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> {
-    let plugin_names = self.plugin_name_maps.get_plugin_names_from_file_path(&request.file_path);
+    let (plugin_names, format_path) = self.plugin_name_maps.resolve_for_format(&request.file_path, &request.file_bytes);
     log_debug!(
       self.environment,
       "Host formatting {} - File length: {} - Plugins: [{}] - Range: {:?}",
@@ -464,10 +467,10 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
           Ok(GetPluginResult::Success(initialized_plugin)) => {
             let result = initialized_plugin
               .format_text(InitializedPluginWithConfigFormatRequest {
-                file_path: request.file_path.clone(),
+                file_path: format_path.clone(),
                 file_bytes: file_text.clone(),
                 range: request.range.clone(),
-                override_config: plugin.get_merged_overrides_for_path(&request.file_path, &request.override_config),
+                override_config: plugin.get_merged_overrides_for_path(&format_path, &request.override_config),
                 on_host_format: scope.create_host_format_callback(),
                 token: request.token.clone(),
               })
@@ -591,7 +594,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
       )
       .await?
     };
-    let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths)?;
+    let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths, self.environment)?;
 
     let mut result = vec![PluginsScopeAndPaths { scope, file_paths_by_plugins }];
     let root_config_path = config.source.maybe_local_path();
@@ -649,7 +652,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
         self.environment,
       )
       .await?;
-      let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths)?;
+      let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths, self.environment)?;
 
       let mut result = vec![PluginsScopeAndPaths { scope, file_paths_by_plugins }];
       // todo: parallelize?

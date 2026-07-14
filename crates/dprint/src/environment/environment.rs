@@ -226,6 +226,10 @@ pub trait Environment:
     }
   }
   fn read_file_bytes(&self, file_path: impl AsRef<Path>) -> io::Result<Vec<u8>>;
+  /// Reads up to `max_bytes` from the start of a file without reading the whole
+  /// file. Used to cheaply inspect a file's leading bytes (ex. a shebang) on
+  /// potentially large extensionless files.
+  fn read_file_start_bytes(&self, file_path: impl AsRef<Path>, max_bytes: usize) -> io::Result<Vec<u8>>;
   fn write_file(&self, file_path: impl AsRef<Path>, file_text: &str) -> io::Result<()> {
     self.write_file_bytes(file_path, file_text.as_bytes())
   }

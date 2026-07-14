@@ -1,7 +1,9 @@
 use anyhow::Context;
 use anyhow::Result;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::str::Split;
 use sys_traits::FsMetadata;
@@ -20,9 +22,13 @@ use crate::utils::GlobOptions;
 use crate::utils::GlobOutput;
 use crate::utils::GlobPattern;
 use crate::utils::GlobPatterns;
+use crate::utils::SHEBANG_READ_BYTES;
+use crate::utils::append_extension;
+use crate::utils::get_lowercase_file_extension;
 use crate::utils::glob;
 use crate::utils::is_negated_glob;
 use crate::utils::is_pattern;
+use crate::utils::parse_shebang_line;
 
 /// Struct that allows using plugin names as a key
 /// in a hash map.
@@ -47,7 +53,28 @@ pub struct NoFilesFoundError {
   pub base_path: CanonicalizedPathBuf,
 }
 
-pub struct FilesPathsByPlugins(HashMap<PluginNames, Vec<PathBuf>>);
+/// A file to format along with the path that should be passed to the plugin.
+///
+/// For a normal file `format_ext` is `None` and the plugin sees `path`. For an
+/// extensionless file routed via its shebang, `format_ext` holds the mapped
+/// extension so the plugin sees `path + mappedExt`, while the file is still read
+/// from and written to `path`.
+pub struct FileToFormat {
+  pub path: PathBuf,
+  pub format_ext: Option<String>,
+}
+
+impl FileToFormat {
+  /// The path to pass to the plugin for formatting.
+  pub fn format_path(&self) -> Cow<'_, Path> {
+    match &self.format_ext {
+      Some(ext) => Cow::Owned(append_extension(&self.path, ext)),
+      None => Cow::Borrowed(&self.path),
+    }
+  }
+}
+
+pub struct FilesPathsByPlugins(HashMap<PluginNames, Vec<FileToFormat>>);
 
 impl FilesPathsByPlugins {
   pub fn ensure_not_empty(&self, base_path: &CanonicalizedPathBuf) -> Result<(), NoFilesFoundError> {
@@ -62,29 +89,56 @@ impl FilesPathsByPlugins {
     self.0.is_empty()
   }
 
-  pub fn into_vec(self) -> Vec<(PluginNames, Vec<PathBuf>)> {
+  pub fn into_vec(self) -> Vec<(PluginNames, Vec<FileToFormat>)> {
     self.0.into_iter().collect()
   }
 
   pub fn all_file_paths(&self) -> impl Iterator<Item = &PathBuf> {
-    self.0.values().flatten()
+    self.0.values().flatten().map(|f| &f.path)
   }
 }
 
-pub fn get_file_paths_by_plugins(plugin_name_maps: &PluginNameResolutionMaps, file_paths: Vec<PathBuf>) -> Result<FilesPathsByPlugins> {
-  let mut file_paths_by_plugin: HashMap<PluginNames, Vec<PathBuf>> = HashMap::new();
+pub fn get_file_paths_by_plugins(
+  plugin_name_maps: &PluginNameResolutionMaps,
+  file_paths: Vec<PathBuf>,
+  environment: &impl Environment,
+) -> Result<FilesPathsByPlugins> {
+  let mut file_paths_by_plugin: HashMap<PluginNames, Vec<FileToFormat>> = HashMap::new();
 
   for file_path in file_paths.into_iter() {
-    let plugin_names = plugin_name_maps.get_plugin_names_from_file_path(&file_path);
+    let mut plugin_names = plugin_name_maps.get_plugin_names_from_file_path(&file_path);
+    let mut format_ext = None;
+
+    // fall back to shebang-based routing for extensionless files that didn't
+    // match by association, file name or extension
+    if plugin_names.is_empty()
+      && plugin_name_maps.has_hashbangs()
+      && get_lowercase_file_extension(&file_path).is_none()
+      && let Some(shebang_line) = read_shebang_line(environment, &file_path)
+      && let Some(ext) = plugin_name_maps.resolve_hashbang_extension(&shebang_line)
+    {
+      let synthetic_path = append_extension(&file_path, ext);
+      let names = plugin_name_maps.get_plugin_names_from_file_path(&synthetic_path);
+      if !names.is_empty() {
+        plugin_names = names;
+        format_ext = Some(ext.to_string());
+      }
+    }
 
     if !plugin_names.is_empty() {
       let plugin_names_key = PluginNames::from_plugin_names(&plugin_names);
-      let file_paths = file_paths_by_plugin.entry(plugin_names_key).or_default();
-      file_paths.push(file_path);
+      let files = file_paths_by_plugin.entry(plugin_names_key).or_default();
+      files.push(FileToFormat { path: file_path, format_ext });
     }
   }
 
   Ok(FilesPathsByPlugins(file_paths_by_plugin))
+}
+
+/// Reads the shebang line from the start of an extensionless file, if present.
+fn read_shebang_line(environment: &impl Environment, file_path: &Path) -> Option<String> {
+  let bytes = environment.read_file_start_bytes(file_path, SHEBANG_READ_BYTES).ok()?;
+  parse_shebang_line(&bytes)
 }
 
 pub async fn get_and_resolve_file_paths<'a>(
@@ -117,7 +171,13 @@ pub async fn get_and_resolve_file_paths<'a>(
     // as this is a massive performance improvement, because it collects less file
     // paths to examine and match to plugins later.
     let search_base = get_cli_search_base(&cwd, &file_patterns);
-    file_patterns.config_includes = Some(GlobPattern::new_vec(get_plugin_patterns(plugins), search_base));
+    let mut patterns = get_plugin_patterns(plugins);
+    if config.hashbangs_enabled() {
+      // when shebang routing is enabled, also collect extensionless files so
+      // they can be routed to a plugin based on their shebang line
+      patterns.push("**/*".to_string());
+    }
+    file_patterns.config_includes = Some(GlobPattern::new_vec(patterns, search_base));
   }
 
   get_and_resolve_file_patterns(config, file_patterns, args.no_gitignore, config_discovery, environment).await
@@ -130,13 +190,7 @@ fn expand_directory_include_patterns(args: &FilePatternArgs, environment: &impl 
       .iter()
       .flat_map(|pattern| expand_directory_include_pattern(pattern, environment))
       .collect(),
-    include_pattern_overrides: args.include_pattern_overrides.clone(),
-    exclude_patterns: args.exclude_patterns.clone(),
-    exclude_pattern_overrides: args.exclude_pattern_overrides.clone(),
-    allow_node_modules: args.allow_node_modules,
-    no_gitignore: args.no_gitignore,
-    only_staged: args.only_staged,
-    only_dirty: args.only_dirty,
+    ..args.clone()
   }
 }
 
