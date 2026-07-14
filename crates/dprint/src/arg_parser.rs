@@ -265,6 +265,7 @@ pub struct FilePatternArgs {
   pub exclude_pattern_overrides: Option<Vec<String>>,
   pub allow_node_modules: bool,
   pub no_gitignore: bool,
+  pub follow_symlinks: bool,
   pub only_staged: bool,
   pub only_dirty: bool,
 }
@@ -489,6 +490,7 @@ fn parse_file_patterns<TStdInReader: StdInReader>(matches: &ArgMatches, std_in_r
     only_dirty: matches.get_flag("dirty"),
     allow_node_modules: matches.get_flag("allow-node-modules"),
     no_gitignore: matches.get_flag("no-gitignore"),
+    follow_symlinks: matches.get_flag("follow-symlinks"),
     include_patterns: file_patterns,
     include_pattern_overrides: matches.get_many("includes-override").map(values_to_vec),
     exclude_patterns: maybe_values_to_vec(matches.get_many("excludes")),
@@ -1002,6 +1004,12 @@ impl ClapExtensions for clap::Command {
         Arg::new("no-gitignore")
           .long("no-gitignore")
           .help("Disables respecting .gitignore files.")
+          .num_args(0),
+      )
+      .arg(
+        Arg::new("follow-symlinks")
+          .long("follow-symlinks")
+          .help("Follows symlinks that point to files during discovery and formats the file they point to. This may alternatively be enabled in the configuration file.")
           .num_args(0),
       )
   }

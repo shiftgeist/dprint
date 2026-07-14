@@ -63,7 +63,7 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
     let exe_name = if cfg!(windows) { "test-process-plugin.exe" } else { "test-process-plugin" };
     let plugins_dir = environment.get_cache_dir().join("plugins");
     let plugin_file_path = environment
-      .dir_info(&plugins_dir)
+      .dir_info(&plugins_dir, false)
       .unwrap_or_default()
       .into_iter()
       .find_map(|entry| match entry {

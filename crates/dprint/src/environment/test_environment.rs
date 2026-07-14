@@ -643,7 +643,7 @@ impl Environment for TestEnvironment {
     killed
   }
 
-  fn dir_info(&self, dir_path: impl AsRef<Path>) -> io::Result<Vec<DirEntry>> {
+  fn dir_info(&self, dir_path: impl AsRef<Path>, follow_symlinks: bool) -> io::Result<Vec<DirEntry>> {
     if let Some(err) = self.dir_info_error.lock().take() {
       return Err(err);
     }
@@ -660,7 +660,7 @@ impl Environment for TestEnvironment {
           name: entry.file_name().into_owned(),
           path: self.clean_path(entry.path()),
         });
-      } else if file_type.is_symlink() {
+      } else if follow_symlinks && file_type.is_symlink() {
         // follow the symlink and, when it points to a file, format the file it
         // points to (see the real environment for details)
         let path = self.clean_path(entry.path());

@@ -756,6 +756,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     exclude_pattern_overrides: None,
     allow_node_modules: false,
     no_gitignore: false,
+    follow_symlinks: false,
     only_staged: false,
     only_dirty: false,
   };

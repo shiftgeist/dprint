@@ -41,6 +41,8 @@ pub struct GlobOptions {
   pub pattern_base: CanonicalizedPathBuf,
   /// Whether to disable respecting .gitignore files.
   pub no_gitignore: bool,
+  /// Whether to follow symlinks that point to files during discovery.
+  pub follow_symlinks: bool,
 }
 
 pub fn glob(environment: &impl Environment, opts: GlobOptions) -> Result<GlobOutput> {
@@ -96,6 +98,7 @@ pub fn glob(environment: &impl Environment, opts: GlobOptions) -> Result<GlobOut
       start_dir: opts.start_dir,
       config_discovery: opts.config_discovery,
       thread_count: read_dir_thread_count,
+      follow_symlinks: opts.follow_symlinks,
     },
   ));
   for _ in 0..read_dir_thread_count {
@@ -179,6 +182,7 @@ struct ReadDirRunnerOptions {
   start_dir: PathBuf,
   config_discovery: ConfigDiscovery,
   thread_count: usize,
+  follow_symlinks: bool,
 }
 
 struct ReadDirRunner<TEnvironment: Environment> {
@@ -227,7 +231,7 @@ impl<TEnvironment: Environment> ReadDirRunner<TEnvironment> {
   /// `Ok(None)` means the directory contributed nothing and should be skipped
   /// (it was empty or couldn't be read for a non-fatal reason).
   fn read_dir_entries(&self, current_dir: &Path) -> Result<Option<Vec<DirOrConfigEntry>>> {
-    let entries = match self.environment.dir_info(current_dir) {
+    let entries = match self.environment.dir_info(current_dir, self.options.follow_symlinks) {
       Ok(entries) => entries,
       Err(err) => {
         if is_system_volume_error(current_dir, &err) {
@@ -559,6 +563,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -602,6 +607,7 @@ mod test {
           },
           pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
           no_gitignore: false,
+          follow_symlinks: false,
         },
       )
       .unwrap();
@@ -642,6 +648,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -678,6 +685,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -712,6 +720,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -746,6 +755,7 @@ mod test {
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         // `--no-gitignore` disables all gitignore handling, including the global file
         no_gitignore: true,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -773,6 +783,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .err()
@@ -798,6 +809,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     );
     assert!(result.is_ok());
@@ -828,6 +840,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -861,6 +874,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -895,6 +909,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/test/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -929,6 +944,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -963,6 +979,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();

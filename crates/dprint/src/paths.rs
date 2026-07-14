@@ -116,13 +116,15 @@ pub async fn get_and_resolve_file_paths<'a>(
     file_patterns.config_includes = Some(GlobPattern::new_vec(get_plugin_patterns(plugins), cwd.clone()));
   }
 
-  get_and_resolve_file_patterns(config, file_patterns, args.no_gitignore, config_discovery, environment).await
+  let follow_symlinks = args.follow_symlinks || config.follow_symlinks.unwrap_or(false);
+  get_and_resolve_file_patterns(config, file_patterns, args.no_gitignore, follow_symlinks, config_discovery, environment).await
 }
 
 async fn get_and_resolve_file_patterns(
   config: &ResolvedConfig,
   file_patterns: GlobPatterns,
   no_gitignore: bool,
+  follow_symlinks: bool,
   config_discovery: ConfigDiscovery,
   environment: &impl Environment,
 ) -> Result<GlobOutput> {
@@ -143,6 +145,7 @@ async fn get_and_resolve_file_patterns(
         pattern_base,
         config_discovery,
         no_gitignore,
+        follow_symlinks,
       },
     )
   })

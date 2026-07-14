@@ -42,6 +42,9 @@ pub struct ResolvedConfig {
   /// Whether a nested (directory specific) configuration file should inherit
   /// the plugins and configuration of its ancestor configuration file.
   pub inherit: Option<bool>,
+  /// Whether to follow symlinks that point to files during file discovery and
+  /// format the file they point to. Defaults to off.
+  pub follow_symlinks: Option<bool>,
   pub config_map: ConfigMap,
 }
 
@@ -124,6 +127,7 @@ pub async fn resolve_config_from_args(args: &CliArgs, environment: &impl Environ
           includes: None,
           incremental: None,
           inherit: None,
+          follow_symlinks: None,
           plugins: Vec::new(),
         }
       } else if args.config_discovery(environment).traverse_ancestors() {
@@ -191,6 +195,7 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
 
   let incremental = take_bool_from_config_map(&mut config_map, "incremental")?;
   let inherit = take_bool_from_config_map(&mut config_map, "inherit")?;
+  let follow_symlinks = take_bool_from_config_map(&mut config_map, "followSymlinks")?;
   config_map.shift_remove("projectType"); // this was an old config property that's no longer used
   let extends = take_extends(&mut config_map)?;
   let resolved_config = ResolvedConfig {
@@ -202,6 +207,7 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
     plugins,
     incremental,
     inherit,
+    follow_symlinks,
   };
 
   // resolve extends
@@ -228,6 +234,11 @@ pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig) -> Re
   // inherit the incremental flag when not specified in the nested config
   if config.incremental.is_none() {
     config.incremental = parent.incremental;
+  }
+
+  // inherit the follow_symlinks flag when not specified in the nested config
+  if config.follow_symlinks.is_none() {
+    config.follow_symlinks = parent.follow_symlinks;
   }
 
   merge_config_map_into(&mut config.config_map, parent.config_map.clone())?;
@@ -1271,6 +1282,20 @@ mod tests {
   }
 
   #[test]
+  fn should_resolve_follow_symlinks() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "followSymlinks": true }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let config = resolve_local_config("/dprint.json", &environment).await;
+      assert_eq!(config.follow_symlinks, Some(true));
+      // it should be removed from the config map so it isn't treated as global config
+      assert!(!config.config_map.contains_key("followSymlinks"));
+    });
+  }
+
+  #[test]
   fn should_error_extending_locked_config() {
     let environment = TestEnvironment::new();
     environment.add_remote_file(
@@ -1862,6 +1887,7 @@ mod tests {
       ],
       incremental: Some(true),
       inherit: None,
+      follow_symlinks: None,
       config_map: ConfigMap::from([
         ("lineWidth".to_string(), ConfigMapValue::from_i32(80)),
         (
@@ -1887,6 +1913,7 @@ mod tests {
       plugins: vec![PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm")],
       incremental: None,
       inherit: Some(true),
+      follow_symlinks: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1974,6 +2001,7 @@ mod tests {
       plugins: Vec::new(),
       incremental: None,
       inherit: None,
+      follow_symlinks: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1992,6 +2020,7 @@ mod tests {
       plugins: Vec::new(),
       incremental: None,
       inherit: Some(true),
+      follow_symlinks: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {

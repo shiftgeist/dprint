@@ -425,6 +425,28 @@ Alternatively, specify `--incremental=false` on the CLI:
 dprint fmt --incremental=false
 ```
 
+## Symlinks
+
+By default, dprint ignores symlinks during file discovery.
+
+To have it follow symlinks that point to a file and format the file they point to, enable it in your configuration file:
+
+```json
+{
+  // etc...
+  "followSymlinks": true
+  // etc...
+}
+```
+
+Alternatively, specify `--follow-symlinks` on the CLI:
+
+```sh
+dprint fmt --follow-symlinks
+```
+
+The file is read and written through the link, so the source file it points to is updated and the symlink itself is preserved. Symlinks that point to directories are not traversed.
+
 ## Global Configuration
 
 There are certain non-language specific configuration that can be specified. These are specified on the main configuration object, but can be overridden on a per-plugin basis.
