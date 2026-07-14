@@ -428,7 +428,7 @@ impl Environment for RealEnvironment {
     killed_pids.len()
   }
 
-  fn dir_info(&self, dir_path: impl AsRef<Path>) -> io::Result<Vec<DirEntry>> {
+  fn dir_info(&self, dir_path: impl AsRef<Path>, follow_symlinks: bool) -> io::Result<Vec<DirEntry>> {
     let mut entries = Vec::new();
 
     #[allow(clippy::disallowed_methods)]
@@ -444,6 +444,19 @@ impl Environment for RealEnvironment {
           name: entry.file_name(),
           path: entry.path(),
         });
+      } else if follow_symlinks && file_type.is_symlink() {
+        // follow the symlink and, when it points to a file, format the file it
+        // points to. The content is read and written through the link, so the
+        // source file is updated and the symlink is preserved. Symlinks to
+        // directories are not traversed in order to avoid cycles.
+        #[allow(clippy::disallowed_methods)]
+        let points_to_file = fs::metadata(entry.path()).map(|m| m.is_file()).unwrap_or(false);
+        if points_to_file {
+          entries.push(DirEntry::File {
+            name: entry.file_name(),
+            path: entry.path(),
+          });
+        }
       }
     }
 

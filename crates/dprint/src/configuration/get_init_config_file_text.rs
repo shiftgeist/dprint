@@ -418,7 +418,7 @@ fn scan_project_files(environment: &impl Environment) -> ProjectFiles {
       break;
     }
     dirs_remaining -= 1;
-    let Ok(entries) = environment.dir_info(&dir) else {
+    let Ok(entries) = environment.dir_info(&dir, false) else {
       continue; // best-effort: skip directories we can't read
     };
     for entry in entries {

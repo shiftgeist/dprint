@@ -50,6 +50,9 @@ pub struct ResolvedConfig {
   /// Whether a nested (directory specific) configuration file should inherit
   /// the plugins and configuration of its ancestor configuration file.
   pub inherit: Option<bool>,
+  /// Whether to follow symlinks that point to files during file discovery and
+  /// format the file they point to. Defaults to off.
+  pub follow_symlinks: Option<bool>,
   pub config_map: ConfigMap,
 }
 
@@ -134,6 +137,7 @@ pub async fn resolve_config_from_args(args: &CliArgs, environment: &impl Environ
           incremental: None,
           shebangs: None,
           inherit: None,
+          follow_symlinks: None,
           plugins: Vec::new(),
         }
       } else if args.config_discovery(environment).traverse_ancestors() {
@@ -202,6 +206,7 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   let incremental = take_bool_from_config_map(&mut config_map, "incremental")?;
   let shebangs = take_shebangs_from_config_map(&mut config_map)?;
   let inherit = take_bool_from_config_map(&mut config_map, "inherit")?;
+  let follow_symlinks = take_bool_from_config_map(&mut config_map, "followSymlinks")?;
   config_map.shift_remove("projectType"); // this was an old config property that's no longer used
   let extends = take_extends(&mut config_map)?;
   let resolved_config = ResolvedConfig {
@@ -215,6 +220,7 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
     incremental,
     shebangs,
     inherit,
+    follow_symlinks,
   };
 
   // resolve extends
@@ -246,6 +252,11 @@ pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig) -> Re
   // inherit the shebang mappings when not specified in the nested config
   if config.shebangs.is_none() {
     config.shebangs = parent.shebangs.clone();
+  }
+
+  // inherit the follow_symlinks flag when not specified in the nested config
+  if config.follow_symlinks.is_none() {
+    config.follow_symlinks = parent.follow_symlinks;
   }
 
   merge_config_map_into(&mut config.config_map, parent.config_map.clone())?;
@@ -738,6 +749,24 @@ mod tests {
       is_first_download: false,
     };
     resolve_config_from_path_with_bytes(&config_path, environment).await.unwrap()
+  }
+
+  /// Builds a `ResolvedConfig` with all optional fields left at their default
+  /// (unset) value, for tests that only care about a handful of fields. Using
+  /// this (rather than listing every field out) means tests don't need to be
+  /// updated every time a new field is added to `ResolvedConfig`.
+  fn test_resolved_config(source: PathSource, base_path: CanonicalizedPathBuf) -> ResolvedConfig {
+    ResolvedConfig {
+      source,
+      base_path,
+      includes: None,
+      excludes: None,
+      plugins: Vec::new(),
+      incremental: None,
+      inherit: None,
+      follow_symlinks: None,
+      config_map: ConfigMap::new(),
+    }
   }
 
   #[test]
@@ -1478,6 +1507,20 @@ mod tests {
           "    at https://dprint.dev/dir/test.json"
         )
       );
+    });
+  }
+
+  #[test]
+  fn should_resolve_follow_symlinks() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "followSymlinks": true }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let config = resolve_local_config("/dprint.json", &environment).await;
+      assert_eq!(config.follow_symlinks, Some(true));
+      // it should be removed from the config map so it isn't treated as global config
+      assert!(!config.config_map.contains_key("followSymlinks"));
     });
   }
 
@@ -2271,6 +2314,10 @@ mod tests {
           }),
         ),
       ]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/"),
+      )
     };
     let child = ResolvedConfig {
       source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
@@ -2292,6 +2339,10 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/sub"),
+      )
     };
 
     let result = inherit_config(child, &parent).unwrap();
@@ -2407,6 +2458,10 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
         }),
       )]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/"),
+      )
     };
     let child = ResolvedConfig {
       source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
@@ -2427,6 +2482,10 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
+      ..test_resolved_config(
+        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
+        CanonicalizedPathBuf::new_for_testing("/sub"),
+      )
     };
 
     let err = inherit_config(child, &parent).err().unwrap();

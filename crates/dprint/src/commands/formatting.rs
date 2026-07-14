@@ -1351,6 +1351,69 @@ mod test {
   }
 
   #[test]
+  fn should_follow_symlinks_and_format_source_file() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        // following symlinks must be explicitly enabled
+        c.add_remote_wasm_plugin().add_config_section("followSymlinks", "true");
+      })
+      // the real file has an extension no plugin handles, so it's only reachable
+      // through the symlink below (and never formatted directly)
+      .write_file("/data/source.bin", "text")
+      .write_file("/other.txt", "text2")
+      .build();
+    // create a symlink whose name a plugin does match, pointing at the real file
+    environment.create_symlink_file("/data/source.bin", "/link.txt");
+
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    // the symlink is followed and its source file is formatted (written through
+    // the link, so the source is updated and the symlink is preserved)
+    assert_eq!(environment.read_file("/data/source.bin").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/link.txt").unwrap(), "text_formatted");
+    // a regular file continues to be formatted as usual
+    assert_eq!(environment.read_file("/other.txt").unwrap(), "text2_formatted");
+  }
+
+  #[test]
+  fn should_follow_symlinks_when_enabled_via_cli_flag() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file("/data/source.bin", "text")
+      .build();
+    environment.create_symlink_file("/data/source.bin", "/link.txt");
+
+    // the CLI flag enables following symlinks
+    run_test_cli(vec!["fmt", "--follow-symlinks"], &environment).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/data/source.bin").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/link.txt").unwrap(), "text_formatted");
+  }
+
+  #[test]
+  fn should_not_follow_symlinks_unless_enabled() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file("/data/source.bin", "text")
+      .write_file("/other.txt", "text2")
+      .build();
+    environment.create_symlink_file("/data/source.bin", "/link.txt");
+
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+
+    // the symlink is ignored by default, so only the regular file is formatted
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/data/source.bin").unwrap(), "text");
+    assert_eq!(environment.read_file("/other.txt").unwrap(), "text2_formatted");
+  }
+
+  #[test]
   fn should_use_request_override_config_over_config_file_overrides() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
       .with_default_config(|c| {

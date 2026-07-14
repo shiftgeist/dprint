@@ -70,6 +70,8 @@ pub struct GlobOptions {
   pub pattern_base: CanonicalizedPathBuf,
   /// Whether to disable respecting .gitignore files.
   pub no_gitignore: bool,
+  /// Whether to follow symlinks that point to files during discovery.
+  pub follow_symlinks: bool,
 }
 
 pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<GlobOutput> {
@@ -161,6 +163,25 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
         run_traversal = false;
       }
     }
+  }
+
+  // Reading directories is I/O bound, so spreading the reads across several threads
+  // saturates the disk far better than a single reader can. See issue #1001.
+  let read_dir_thread_count = resolve_read_dir_thread_count(environment);
+  log_debug!(environment, "Reading directories on {} thread(s)", read_dir_thread_count);
+  let read_dir_runner = Arc::new(ReadDirRunner::new(
+    environment.clone(),
+    shared_state.clone(),
+    ReadDirRunnerOptions {
+      start_dir: opts.start_dir,
+      config_discovery: opts.config_discovery,
+      thread_count: read_dir_thread_count,
+      follow_symlinks: opts.follow_symlinks,
+    },
+  ));
+  for _ in 0..read_dir_thread_count {
+    let read_dir_runner = read_dir_runner.clone();
+    dprint_core::async_runtime::spawn_blocking(move || read_dir_runner.run());
   }
 
   // match the literal file paths (a gitignored file is still matched when
@@ -691,6 +712,7 @@ struct ReadDirRunnerOptions {
   thread_count: usize,
   /// The configured shebang lines to check extensionless files for.
   shebangs: Vec<String>,
+  follow_symlinks: bool,
 }
 
 struct ReadDirRunner<TEnvironment: Environment> {
@@ -749,7 +771,7 @@ impl<TEnvironment: Environment> ReadDirRunner<TEnvironment> {
   /// (it was empty, nothing in it matched, or it couldn't be read for a
   /// non-fatal reason).
   fn read_dir_entries(&self, current_dir: PathBuf) -> Result<Option<(usize, DirEntries)>> {
-    let entries = match self.environment.dir_info(&current_dir) {
+    let entries = match self.environment.dir_info(&current_dir, self.options.follow_symlinks) {
       Ok(entries) => entries,
       Err(err) => {
         if is_system_volume_error(&current_dir, &err) {
@@ -1137,6 +1159,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1232,6 +1255,7 @@ mod test {
           },
           pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
           no_gitignore: false,
+          follow_symlinks: false,
         },
       )
       .unwrap();
@@ -1347,6 +1371,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1385,6 +1410,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1421,6 +1447,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1457,6 +1484,7 @@ mod test {
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         // `--no-gitignore` disables all gitignore handling, including the global file
         no_gitignore: true,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1680,6 +1708,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .err()
@@ -1707,6 +1736,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     );
     assert!(result.is_ok());
@@ -1739,6 +1769,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1774,6 +1805,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1810,6 +1842,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/test/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1846,6 +1879,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();
@@ -1882,6 +1916,7 @@ mod test {
         },
         pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
         no_gitignore: false,
+        follow_symlinks: false,
       },
     )
     .unwrap();

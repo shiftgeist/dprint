@@ -182,13 +182,45 @@ pub async fn get_and_resolve_file_paths<'a>(
     file_patterns.config_includes = Some(GlobPattern::new_vec(get_plugin_patterns(plugins), config.base_path.clone()));
   }
 
-  get_and_resolve_file_patterns(config, file_patterns, args.no_gitignore, config_discovery, environment).await
+  let follow_symlinks = args.follow_symlinks || config.follow_symlinks.unwrap_or(false);
+  get_and_resolve_file_patterns(config, file_patterns, args.no_gitignore, follow_symlinks, config_discovery, environment).await
+}
+
+fn expand_directory_include_patterns(args: &FilePatternArgs, environment: &impl Environment) -> FilePatternArgs {
+  FilePatternArgs {
+    include_patterns: args
+      .include_patterns
+      .iter()
+      .flat_map(|pattern| expand_directory_include_pattern(pattern, environment))
+      .collect(),
+    ..args.clone()
+  }
+}
+
+fn expand_directory_include_pattern(pattern: &str, environment: &impl Environment) -> Vec<String> {
+  if pattern == "." || is_pattern(pattern) {
+    return vec![pattern.to_string()];
+  }
+
+  let normalized_pattern = pattern.replace('\\', "/");
+  let pattern_path = PathBuf::from(&normalized_pattern);
+  let path = if environment.is_absolute_path(&pattern_path) {
+    pattern_path
+  } else {
+    environment.cwd().join(pattern_path)
+  };
+  if environment.fs_is_dir_no_err(path) {
+    vec![normalized_pattern.clone(), format!("{}/**/*", normalized_pattern.trim_end_matches('/'))]
+  } else {
+    vec![pattern.to_string()]
+  }
 }
 
 async fn get_and_resolve_file_patterns(
   config: &ResolvedConfig,
   file_patterns: GlobPatterns,
   no_gitignore: bool,
+  follow_symlinks: bool,
   config_discovery: ConfigDiscovery,
   environment: &impl Environment,
 ) -> Result<GlobOutput> {
@@ -211,6 +243,7 @@ async fn get_and_resolve_file_patterns(
         config_discovery,
         current_config_path,
         no_gitignore,
+        follow_symlinks,
       },
     )
   })

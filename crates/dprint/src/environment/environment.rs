@@ -254,7 +254,7 @@ pub trait Environment:
       log_debug!(self, "{:#}", err);
     }
   }
-  fn dir_info(&self, dir_path: impl AsRef<Path>) -> io::Result<Vec<DirEntry>>;
+  fn dir_info(&self, dir_path: impl AsRef<Path>, follow_symlinks: bool) -> io::Result<Vec<DirEntry>>;
   /// Kills any running process whose executable lives under the given directory
   /// and returns how many were killed. Used when clearing the cache so a process
   /// plugin that's still running can't stop its executable from being deleted
