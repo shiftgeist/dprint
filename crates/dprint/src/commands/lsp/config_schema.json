@@ -80,13 +80,6 @@
         "type": "string"
       }
     },
-    "plugins": {
-      "description": "Array of plugin URLs to format files.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
     "hashbangs": {
       "description": "Maps a shebang line to a file extension so extensionless files that begin with that shebang are formatted as if they had that extension. Only extensionless files are inspected. Requires \"useHashbangs\": true (or --use-hashbangs) to take effect.",
       "type": "object",
@@ -99,6 +92,13 @@
       "description": "Whether to route extensionless files to a plugin based on their shebang line using the \"hashbangs\" mapping. Defaults to false.",
       "type": "boolean",
       "default": false
+    },
+    "plugins": {
+      "description": "Array of plugin URLs to format files.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "additionalProperties": {

@@ -725,21 +725,6 @@ mod tests {
     resolve_config_from_path_with_bytes(&config_path, environment).await.unwrap()
   }
 
-  fn test_resolved_config(source: PathSource, base_path: CanonicalizedPathBuf) -> ResolvedConfig {
-    ResolvedConfig {
-      source,
-      base_path,
-      includes: None,
-      excludes: None,
-      hashbangs: IndexMap::new(),
-      use_hashbangs: None,
-      plugins: Vec::new(),
-      incremental: None,
-      inherit: None,
-      config_map: ConfigMap::new(),
-    }
-  }
-
   #[test]
   fn inherit_config_should_keep_config_dir_relative_to_each_config_file() {
     // ${configDir} is expanded when each config file is parsed (before the inherit
@@ -1364,85 +1349,6 @@ mod tests {
   }
 
   #[test]
-  fn should_resolve_hashbangs() {
-    let environment = TestEnvironmentBuilder::new()
-      .write_file(
-        "/dprint.json",
-        r##"{
-          "hashbangs": {
-            "#!/usr/bin/env  bash": ".SH",
-            "#!/usr/bin/env -S deno run": "ts"
-          },
-          "useHashbangs": true
-        }"##,
-      )
-      .build();
-
-    environment.clone().run_in_runtime(async move {
-      let config = resolve_local_config("/dprint.json", &environment).await;
-      assert_eq!(
-        config.hashbangs,
-        IndexMap::from([
-          // inter-token whitespace in the key is normalized
-          ("#!/usr/bin/env bash".to_string(), "sh".to_string()),
-          // a leading dot in the extension is stripped and the extension is lowercased
-          ("#!/usr/bin/env -S deno run".to_string(), "ts".to_string()),
-        ])
-      );
-      assert_eq!(config.use_hashbangs, Some(true));
-      assert!(config.hashbangs_enabled());
-      // these should be removed from the config map so they aren't treated as global config
-      assert!(!config.config_map.contains_key("hashbangs"));
-      assert!(!config.config_map.contains_key("useHashbangs"));
-    });
-  }
-
-  #[test]
-  fn hashbangs_disabled_when_toggle_missing() {
-    let environment = TestEnvironmentBuilder::new()
-      .write_file(
-        "/dprint.json",
-        r##"{
-          "hashbangs": {
-            "#!/bin/sh": ".sh"
-          }
-        }"##,
-      )
-      .build();
-
-    environment.clone().run_in_runtime(async move {
-      let config = resolve_local_config("/dprint.json", &environment).await;
-      // the mapping is parsed, but routing is off until explicitly enabled
-      assert_eq!(config.use_hashbangs, None);
-      assert!(!config.hashbangs_enabled());
-    });
-  }
-
-  #[test]
-  fn should_error_on_non_string_hashbang_value() {
-    let environment = TestEnvironment::new();
-    environment.add_remote_file(
-      "https://dprint.dev/test.json",
-      r##"{
-        "hashbangs": {
-          "#!/bin/sh": 5
-        }
-      }"##
-        .as_bytes(),
-    );
-    environment.clone().run_in_runtime(async move {
-      let result = get_result("https://dprint.dev/test.json", &environment).await.err().unwrap();
-      assert!(
-        result
-          .to_string()
-          .contains("Expected a string file extension for the '#!/bin/sh' shebang in the 'hashbangs' configuration."),
-        "actual: {}",
-        result
-      );
-    });
-  }
-
-  #[test]
   fn should_error_extending_locked_config() {
     let environment = TestEnvironment::new();
     environment.add_remote_file(
@@ -2022,15 +1928,20 @@ mod tests {
   #[test]
   fn inherit_config_should_merge_ancestor_config() {
     let parent = ResolvedConfig {
+      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
+      base_path: CanonicalizedPathBuf::new_for_testing("/"),
       includes: Some(vec!["**/*.txt".to_string()]),
       // "**/node_modules" rebases into the nested directory, but the anchored
       // "dist" points outside it and is dropped
       excludes: Some(vec!["**/node_modules".to_string(), "dist".to_string()]),
+      hashbangs: IndexMap::new(),
+      use_hashbangs: None,
       plugins: vec![
         PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
         PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/json.wasm"),
       ],
       incremental: Some(true),
+      inherit: None,
       config_map: ConfigMap::from([
         ("lineWidth".to_string(), ConfigMapValue::from_i32(80)),
         (
@@ -2046,15 +1957,17 @@ mod tests {
           }),
         ),
       ]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/"),
-      )
     };
     let child = ResolvedConfig {
+      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
+      base_path: CanonicalizedPathBuf::new_for_testing("/sub"),
+      includes: None,
       excludes: Some(vec!["sub-excludes".to_string()]),
+      hashbangs: IndexMap::new(),
+      use_hashbangs: None,
       // a plugin specified in the child has precedence over the ancestor's
       plugins: vec![PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm")],
+      incremental: None,
       inherit: Some(true),
       config_map: ConfigMap::from([(
         "test".to_string(),
@@ -2065,10 +1978,6 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/sub"),
-      )
     };
 
     let result = inherit_config(child, &parent).unwrap();
@@ -2140,7 +2049,15 @@ mod tests {
   #[test]
   fn inherit_config_should_error_overriding_locked_ancestor_config() {
     let parent = ResolvedConfig {
+      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
+      base_path: CanonicalizedPathBuf::new_for_testing("/"),
+      includes: None,
+      excludes: None,
+      hashbangs: IndexMap::new(),
+      use_hashbangs: None,
       plugins: Vec::new(),
+      incremental: None,
+      inherit: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -2150,13 +2067,16 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
         }),
       )]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/"),
-      )
     };
     let child = ResolvedConfig {
+      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
+      base_path: CanonicalizedPathBuf::new_for_testing("/sub"),
+      includes: None,
+      excludes: None,
+      hashbangs: IndexMap::new(),
+      use_hashbangs: None,
       plugins: Vec::new(),
+      incremental: None,
       inherit: Some(true),
       config_map: ConfigMap::from([(
         "test".to_string(),
@@ -2167,10 +2087,6 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/sub"),
-      )
     };
 
     let err = inherit_config(child, &parent).err().unwrap();
@@ -2425,6 +2341,85 @@ mod tests {
           "Unknown template literal ${unknown}. Only ${configDir} and ${originConfigDir} are supported. If you meant to pass this to a plugin, escape the dollar sign with two back slashes.\n",
           "    at https://dprint.dev/test.json"
         ),
+      );
+    });
+  }
+
+  #[test]
+  fn should_resolve_hashbangs() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r##"{
+          "hashbangs": {
+            "#!/usr/bin/env  bash": ".SH",
+            "#!/usr/bin/env -S deno run": "ts"
+          },
+          "useHashbangs": true
+        }"##,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let config = resolve_local_config("/dprint.json", &environment).await;
+      assert_eq!(
+        config.hashbangs,
+        IndexMap::from([
+          // inter-token whitespace in the key is normalized
+          ("#!/usr/bin/env bash".to_string(), "sh".to_string()),
+          // a leading dot in the extension is stripped and the extension is lowercased
+          ("#!/usr/bin/env -S deno run".to_string(), "ts".to_string()),
+        ])
+      );
+      assert_eq!(config.use_hashbangs, Some(true));
+      assert!(config.hashbangs_enabled());
+      // these should be removed from the config map so they aren't treated as global config
+      assert!(!config.config_map.contains_key("hashbangs"));
+      assert!(!config.config_map.contains_key("useHashbangs"));
+    });
+  }
+
+  #[test]
+  fn hashbangs_disabled_when_toggle_missing() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r##"{
+          "hashbangs": {
+            "#!/bin/sh": ".sh"
+          }
+        }"##,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let config = resolve_local_config("/dprint.json", &environment).await;
+      // the mapping is parsed, but routing is off until explicitly enabled
+      assert_eq!(config.use_hashbangs, None);
+      assert!(!config.hashbangs_enabled());
+    });
+  }
+
+  #[test]
+  fn should_error_on_non_string_hashbang_value() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/test.json",
+      r##"{
+        "hashbangs": {
+          "#!/bin/sh": 5
+        }
+      }"##
+        .as_bytes(),
+    );
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("https://dprint.dev/test.json", &environment).await.err().unwrap();
+      assert!(
+        result
+          .to_string()
+          .contains("Expected a string file extension for the '#!/bin/sh' shebang in the 'hashbangs' configuration."),
+        "actual: {}",
+        result
       );
     });
   }

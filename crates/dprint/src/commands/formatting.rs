@@ -939,151 +939,6 @@ mod test {
   }
 
   #[test]
-  fn should_format_extensionless_files_via_hashbangs() {
-    let build_path = "/scripts/build";
-    let deno_path = "/scripts/deno-task";
-    let python_path = "/scripts/py-thing";
-    let plain_path = "/scripts/plain";
-    let txt_path = "/file.txt";
-    let other_path = "/file.other";
-    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .with_local_config("/config.json", |c| {
-        c.add_remote_wasm_plugin()
-          .add_config_section(
-            "test-plugin",
-            r#"{
-              "file_extensions": ["txt", "sh"]
-            }"#,
-          )
-          .add_config_section(
-            "hashbangs",
-            r##"{
-              "#!/bin/sh": ".sh",
-              "#!/usr/bin/env -S deno run": ".sh",
-              "#!/usr/bin/env python": ".py"
-            }"##,
-          )
-          // shebang routing must be explicitly enabled
-          .add_config_section("useHashbangs", "true");
-      })
-      .write_file(build_path, "#!/bin/sh\ntext")
-      // extra args after the configured prefix should still match (prefix match)
-      .write_file(deno_path, "#!/usr/bin/env -S deno run --allow-net --allow-read\ntext")
-      // maps to `.py`, but no plugin handles it, so it's left untouched
-      .write_file(python_path, "#!/usr/bin/env python\ntext")
-      // no shebang, so it's left untouched
-      .write_file(plain_path, "plain text\nmore")
-      .write_file(txt_path, "text")
-      // has an extension no plugin handles, so it's left untouched
-      .write_file(other_path, "text")
-      .build();
-
-    run_test_cli(
-      vec![
-        "fmt",
-        build_path,
-        deno_path,
-        python_path,
-        plain_path,
-        txt_path,
-        other_path,
-        "--config",
-        "/config.json",
-      ],
-      &environment,
-    )
-    .unwrap();
-
-    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
-    // extensionless files routed to a plugin by their shebang are formatted...
-    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(
-      environment.read_file(deno_path).unwrap(),
-      "#!/usr/bin/env -S deno run --allow-net --allow-read\ntext_formatted"
-    );
-    // ...while files whose shebang maps to an unhandled extension or doesn't
-    // match any mapping are left untouched
-    assert_eq!(environment.read_file(python_path).unwrap(), "#!/usr/bin/env python\ntext");
-    assert_eq!(environment.read_file(plain_path).unwrap(), "plain text\nmore");
-    // files with a handled extension are unaffected
-    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
-    // files with an unhandled extension are unaffected
-    assert_eq!(environment.read_file(other_path).unwrap(), "text");
-  }
-
-  #[test]
-  fn should_ignore_extensionless_files_without_hashbangs() {
-    let build_path = "/scripts/build";
-    let txt_path = "/file.txt";
-    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .with_local_config("/config.json", |c| {
-        c.add_remote_wasm_plugin();
-      })
-      .write_file(build_path, "#!/bin/sh\ntext")
-      .write_file(txt_path, "text")
-      .build();
-
-    run_test_cli(vec!["fmt", build_path, txt_path, "--config", "/config.json"], &environment).unwrap();
-
-    // without `hashbangs` configured, the extensionless file is never read or formatted
-    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext");
-    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
-  }
-
-  #[test]
-  fn should_not_route_hashbangs_unless_explicitly_enabled() {
-    let build_path = "/scripts/build";
-    let txt_path = "/file.txt";
-    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .with_local_config("/config.json", |c| {
-        // the mapping is present, but shebang routing isn't enabled
-        c.add_remote_wasm_plugin().add_config_section(
-          "hashbangs",
-          r##"{
-              "#!/bin/sh": ".txt"
-            }"##,
-        );
-      })
-      .write_file(build_path, "#!/bin/sh\ntext")
-      .write_file(txt_path, "text")
-      .build();
-
-    run_test_cli(vec!["fmt", build_path, txt_path, "--config", "/config.json"], &environment).unwrap();
-
-    // the extensionless file is left untouched because the toggle is off
-    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext");
-    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
-  }
-
-  #[test]
-  fn should_route_hashbangs_when_enabled_via_cli_flag() {
-    let build_path = "/scripts/build";
-    let txt_path = "/file.txt";
-    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .with_local_config("/config.json", |c| {
-        // the mapping is present but the config doesn't enable it
-        c.add_remote_wasm_plugin().add_config_section(
-          "hashbangs",
-          r##"{
-              "#!/bin/sh": ".txt"
-            }"##,
-        );
-      })
-      .write_file(build_path, "#!/bin/sh\ntext")
-      .write_file(txt_path, "text")
-      .build();
-
-    // the CLI flag enables shebang routing
-    run_test_cli(vec!["fmt", build_path, txt_path, "--use-hashbangs", "--config", "/config.json"], &environment).unwrap();
-
-    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
-  }
-
-  #[test]
   fn should_use_request_override_config_over_config_file_overrides() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
       .with_default_config(|c| {
@@ -3692,5 +3547,150 @@ mod test {
     assert_eq!(environment.read_file("/file.txt_ps").unwrap(), "text_formatted_process");
 
     let _ = environment.take_stderr_messages(); // drain process-plugin extract progress
+  }
+
+  #[test]
+  fn should_format_extensionless_files_via_hashbangs() {
+    let build_path = "/scripts/build";
+    let deno_path = "/scripts/deno-task";
+    let python_path = "/scripts/py-thing";
+    let plain_path = "/scripts/plain";
+    let txt_path = "/file.txt";
+    let other_path = "/file.other";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_local_config("/config.json", |c| {
+        c.add_remote_wasm_plugin()
+          .add_config_section(
+            "test-plugin",
+            r#"{
+              "file_extensions": ["txt", "sh"]
+            }"#,
+          )
+          .add_config_section(
+            "hashbangs",
+            r##"{
+              "#!/bin/sh": ".sh",
+              "#!/usr/bin/env -S deno run": ".sh",
+              "#!/usr/bin/env python": ".py"
+            }"##,
+          )
+          // shebang routing must be explicitly enabled
+          .add_config_section("useHashbangs", "true");
+      })
+      .write_file(build_path, "#!/bin/sh\ntext")
+      // extra args after the configured prefix should still match (prefix match)
+      .write_file(deno_path, "#!/usr/bin/env -S deno run --allow-net --allow-read\ntext")
+      // maps to `.py`, but no plugin handles it, so it's left untouched
+      .write_file(python_path, "#!/usr/bin/env python\ntext")
+      // no shebang, so it's left untouched
+      .write_file(plain_path, "plain text\nmore")
+      .write_file(txt_path, "text")
+      // has an extension no plugin handles, so it's left untouched
+      .write_file(other_path, "text")
+      .build();
+
+    run_test_cli(
+      vec![
+        "fmt",
+        build_path,
+        deno_path,
+        python_path,
+        plain_path,
+        txt_path,
+        other_path,
+        "--config",
+        "/config.json",
+      ],
+      &environment,
+    )
+    .unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+    // extensionless files routed to a plugin by their shebang are formatted...
+    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(
+      environment.read_file(deno_path).unwrap(),
+      "#!/usr/bin/env -S deno run --allow-net --allow-read\ntext_formatted"
+    );
+    // ...while files whose shebang maps to an unhandled extension or doesn't
+    // match any mapping are left untouched
+    assert_eq!(environment.read_file(python_path).unwrap(), "#!/usr/bin/env python\ntext");
+    assert_eq!(environment.read_file(plain_path).unwrap(), "plain text\nmore");
+    // files with a handled extension are unaffected
+    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
+    // files with an unhandled extension are unaffected
+    assert_eq!(environment.read_file(other_path).unwrap(), "text");
+  }
+
+  #[test]
+  fn should_ignore_extensionless_files_without_hashbangs() {
+    let build_path = "/scripts/build";
+    let txt_path = "/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_local_config("/config.json", |c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file(build_path, "#!/bin/sh\ntext")
+      .write_file(txt_path, "text")
+      .build();
+
+    run_test_cli(vec!["fmt", build_path, txt_path, "--config", "/config.json"], &environment).unwrap();
+
+    // without `hashbangs` configured, the extensionless file is never read or formatted
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext");
+    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
+  }
+
+  #[test]
+  fn should_not_route_hashbangs_unless_explicitly_enabled() {
+    let build_path = "/scripts/build";
+    let txt_path = "/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_local_config("/config.json", |c| {
+        // the mapping is present, but shebang routing isn't enabled
+        c.add_remote_wasm_plugin().add_config_section(
+          "hashbangs",
+          r##"{
+              "#!/bin/sh": ".txt"
+            }"##,
+        );
+      })
+      .write_file(build_path, "#!/bin/sh\ntext")
+      .write_file(txt_path, "text")
+      .build();
+
+    run_test_cli(vec!["fmt", build_path, txt_path, "--config", "/config.json"], &environment).unwrap();
+
+    // the extensionless file is left untouched because the toggle is off
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext");
+    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
+  }
+
+  #[test]
+  fn should_route_hashbangs_when_enabled_via_cli_flag() {
+    let build_path = "/scripts/build";
+    let txt_path = "/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_local_config("/config.json", |c| {
+        // the mapping is present but the config doesn't enable it
+        c.add_remote_wasm_plugin().add_config_section(
+          "hashbangs",
+          r##"{
+              "#!/bin/sh": ".txt"
+            }"##,
+        );
+      })
+      .write_file(build_path, "#!/bin/sh\ntext")
+      .write_file(txt_path, "text")
+      .build();
+
+    // the CLI flag enables shebang routing
+    run_test_cli(vec!["fmt", build_path, txt_path, "--use-hashbangs", "--config", "/config.json"], &environment).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.read_file(build_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(txt_path).unwrap(), "text_formatted");
   }
 }
