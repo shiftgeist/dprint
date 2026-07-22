@@ -751,24 +751,6 @@ mod tests {
     resolve_config_from_path_with_bytes(&config_path, environment).await.unwrap()
   }
 
-  /// Builds a `ResolvedConfig` with all optional fields left at their default
-  /// (unset) value, for tests that only care about a handful of fields. Using
-  /// this (rather than listing every field out) means tests don't need to be
-  /// updated every time a new field is added to `ResolvedConfig`.
-  fn test_resolved_config(source: PathSource, base_path: CanonicalizedPathBuf) -> ResolvedConfig {
-    ResolvedConfig {
-      source,
-      base_path,
-      includes: None,
-      excludes: None,
-      plugins: Vec::new(),
-      incremental: None,
-      inherit: None,
-      follow_symlinks: None,
-      config_map: ConfigMap::new(),
-    }
-  }
-
   #[test]
   fn inherit_config_should_keep_config_dir_relative_to_each_config_file() {
     // ${configDir} is expanded when each config file is parsed (before the inherit
@@ -2299,6 +2281,7 @@ mod tests {
       incremental: Some(true),
       shebangs: None,
       inherit: None,
+      follow_symlinks: None,
       config_map: ConfigMap::from([
         ("lineWidth".to_string(), ConfigMapValue::from_i32(80)),
         (
@@ -2314,10 +2297,6 @@ mod tests {
           }),
         ),
       ]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/"),
-      )
     };
     let child = ResolvedConfig {
       source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
@@ -2330,6 +2309,7 @@ mod tests {
       incremental: None,
       shebangs: None,
       inherit: Some(true),
+      follow_symlinks: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -2339,10 +2319,6 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/sub"),
-      )
     };
 
     let result = inherit_config(child, &parent).unwrap();
@@ -2449,6 +2425,7 @@ mod tests {
       incremental: None,
       shebangs: None,
       inherit: None,
+      follow_symlinks: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -2458,10 +2435,6 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
         }),
       )]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/"),
-      )
     };
     let child = ResolvedConfig {
       source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
@@ -2473,6 +2446,7 @@ mod tests {
       incremental: None,
       shebangs: None,
       inherit: Some(true),
+      follow_symlinks: None,
       config_map: ConfigMap::from([(
         "test".to_string(),
         ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -2482,10 +2456,6 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
-      ..test_resolved_config(
-        PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-        CanonicalizedPathBuf::new_for_testing("/sub"),
-      )
     };
 
     let err = inherit_config(child, &parent).err().unwrap();
